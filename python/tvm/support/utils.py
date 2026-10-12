@@ -271,6 +271,10 @@ def which(exec_name):
     path : str
         The full path of executable if found, otherwise returns None
     """
+    # shutil.which also handles Windows executable suffixes (PATHEXT, e.g. ".exe").
+    found = shutil.which(exec_name)
+    if found:
+        return found
     base_list = ["", "/bin"] + os.environ.get("PATH", "").split(os.pathsep)
     for path in base_list:
         full_path = os.path.join(path, exec_name)

@@ -26,6 +26,11 @@
 #include <dlpack/dlpack.h>
 #include <hip/hip_runtime.h>
 #include <hip/hip_runtime_api.h>
+// hipBLAS 2.x (ROCm 6) needs HIPBLAS_V2 for the hipDataType / hipblasComputeType_t API;
+// hipBLAS 3+ (ROCm 7+) uses it by default and removed hipblasDatatype_t.
+#ifndef HIPBLAS_V2
+#define HIPBLAS_V2
+#endif
 #include <hipblas/hipblas.h>
 #include <hipblaslt/hipblaslt.h>
 #include <tvm/ffi/error.h>
@@ -114,32 +119,19 @@ inline hipDataType GetHipDataType(DLDataType type) {
   TVM_FFI_THROW(InternalError) << "Unsupported hip type";
 }
 
-inline hipblasDatatype_t GetHipBlasDataType(DLDataType type) {
-  if (type.code == kDLInt) {
-    switch (type.bits) {
-      case 8:
-        return HIPBLAS_R_8I;
-      case 32:
-        return HIPBLAS_R_32I;
-    }
-  } else if (type.code == kDLUInt) {
-    switch (type.bits) {
-      case 8:
-        return HIPBLAS_R_8U;
-      case 32:
-        return HIPBLAS_R_32U;
-    }
-  } else if (type.code == kDLFloat) {
-    switch (type.bits) {
+inline hipblasComputeType_t GetHipBlasComputeType(DLDataType out_type) {
+  if (out_type.code == kDLInt && out_type.bits == 32) return HIPBLAS_COMPUTE_32I;
+  if (out_type.code == kDLFloat) {
+    switch (out_type.bits) {
       case 16:
-        return HIPBLAS_R_16F;
+        return HIPBLAS_COMPUTE_16F;
       case 32:
-        return HIPBLAS_R_32F;
+        return HIPBLAS_COMPUTE_32F;
       case 64:
-        return HIPBLAS_R_64F;
+        return HIPBLAS_COMPUTE_64F;
     }
   }
-  TVM_FFI_THROW(InternalError) << "Unsupported hip type";
+  TVM_FFI_THROW(InternalError) << "Unsupported hipBLAS output type";
 }
 
 /*! \brief Execute matrix multiply followed by the specified epilogue, using hipBLASLt. */

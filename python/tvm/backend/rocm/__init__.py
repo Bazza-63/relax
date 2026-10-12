@@ -16,6 +16,8 @@
 # under the License.
 """ROCm-owned TIRx modules."""
 
+import os
+import warnings
 from pathlib import Path
 
 from tvm_ffi.libinfo import load_lib_ctypes
@@ -29,7 +31,7 @@ def _detect_target_from_device(dev):
     return Target(
         {
             "kind": "rocm",
-            "mtriple": "amdgcn-amd-amdhsa-hcc",
+            "mtriple": "amdgcn-amd-amdhsa",
             "max_shared_memory_per_block": dev.max_shared_memory_per_block,
             "max_threads_per_block": dev.max_threads_per_block,
             "thread_warp_size": dev.warp_size,
@@ -37,11 +39,40 @@ def _detect_target_from_device(dev):
     )
 
 
+def _preload_hip_runtime_windows():
+    """Windows: load the HIP runtime from the ROCm install by full path.
+
+    The AMD display driver ships its own amdhip64_*.dll in System32, and the standard DLL
+    search order prefers it over PATH. Once the ROCm copy is loaded, later by-name loads
+    (libtvm_runtime_rocm, libtvm_runtime_extra, hipBLAS) bind to it. The C++ delay-load
+    hook (src/backend/rocm/runtime/rocm_dll_loader_win.cc) does the same for non-Python
+    hosts.
+    """
+    if os.name != "nt":
+        return
+    root = next((os.environ[v] for v in ("ROCM_PATH", "HIP_PATH") if os.environ.get(v)), None)
+    if not root:
+        return
+    bin_dir = Path(root) / "bin"
+    dlls = sorted(bin_dir.glob("amdhip64*.dll"))
+    if not dlls:
+        return
+    import ctypes  # pylint: disable=import-outside-toplevel
+
+    # LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS: dependencies
+    # resolve from the ROCm bin directory first.
+    try:
+        _LOADED_LIBS["amdhip64"] = ctypes.WinDLL(str(dlls[-1]), winmode=0x1100)
+    except OSError as err:
+        warnings.warn(f"Failed to load the ROCm HIP runtime {dlls[-1]}: {err}")
+
+
 def register_backend():
     """Register ROCm-owned Python semantics."""
     from tvm.target.detect_target import register_device_target_detector
 
     runtime_dir = Path(_LOADED_LIBS["tvm_runtime"]._name).resolve().parent
+    _preload_hip_runtime_windows()
     try:
         # Runtime sidecars only need registration side effects; libtvm_runtime is global.
         _LOADED_LIBS["tvm_runtime_rocm"] = load_lib_ctypes(

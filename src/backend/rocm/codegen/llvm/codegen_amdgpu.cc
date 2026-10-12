@@ -269,8 +269,12 @@ ffi::Module BuildAMDGPU(IRModule mod, Target target) {
   cg->AddFunctionsOrdered(mod->functions.begin(), mod->functions.end());
 
   llvm::TargetMachine* tm = llvm_target->GetOrCreateTargetMachine();
+  // The device libraries to link depend on the GPU arch (oclc_isa_version_*) and the
+  // wavefront size (oclc_wavefrontsize64_*).
   auto fbitcode = tvm::ffi::Function::GetGlobalRequired("tvm_callback_rocm_bitcode_path");
-  auto bitcode_files = fbitcode().cast<ffi::Array<ffi::String>>();
+  ffi::String mcpu = target->GetAttr<ffi::String>("mcpu").value_or(ffi::String(""));
+  int64_t warp_size = target->GetAttr<int64_t>("thread_warp_size").value_or(64);
+  auto bitcode_files = fbitcode(mcpu, warp_size).cast<ffi::Array<ffi::String>>();
 
   for (auto& bitcode_path : bitcode_files) {
     std::unique_ptr<llvm::Module> mlib = llvm_instance.LoadIR(bitcode_path);

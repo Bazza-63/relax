@@ -376,7 +376,7 @@ def test_target_from_device_rocm(input_form):
         dev = tvm.rocm()
         target = Target.from_device("rocm" if input_form == "string" else dev)
         assert target.kind.name == "rocm"
-        assert target.attrs["mtriple"] == "amdgcn-and-amdhsa-hcc"
+        assert target.attrs["mtriple"] == "amdgcn-amd-amdhsa"
         assert target.attrs["max_threads_per_block"] == dev.max_threads_per_block
         assert int(target.attrs["max_shared_memory_per_block"]) == dev.max_shared_memory_per_block
         assert int(target.attrs["thread_warp_size"]) == dev.warp_size

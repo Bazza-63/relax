@@ -18,8 +18,10 @@
 
 import os
 import re
+import shutil
 import subprocess
-from os.path import exists, join
+import warnings
+from os.path import exists, isdir, join
 
 import tvm_ffi
 
@@ -45,20 +47,34 @@ def find_lld(required=True):
 
     Note
     ----
-    This function will first search ld.lld that
-    matches the major llvm version that built with tvm
+    The ROCm install's own linker comes first (``LLVM_PATH``, ``<root>/lib/llvm/bin``,
+    ``<root>/llvm/bin``), then ld.lld on PATH, preferring the major LLVM version TVM was
+    built with. Works on Windows (``ld.lld.exe``).
     """
-    lld_list = []
+    names = []
     major = tvm.target.codegen.llvm_version_major(allow_none=True)
     if major is not None:
-        lld_list += [f"ld.lld-{major}.0"]
-        lld_list += [f"ld.lld-{major}"]
-    lld_list += ["ld.lld"]
-    lld_list += [f"/opt/rocm/llvm/bin/{x}" for x in lld_list]
-    valid_list = [utils.which(x) for x in lld_list]
-    valid_list = [x for x in valid_list if x]
+        names += [f"ld.lld-{major}.0", f"ld.lld-{major}"]
+    names += ["ld.lld"]
+
+    dirs = []
+    llvm_path = os.environ.get("LLVM_PATH")
+    if llvm_path:
+        dirs.append(join(llvm_path, "bin"))
+    try:
+        rocm_path = find_rocm_path()
+        dirs += [join(rocm_path, "lib", "llvm", "bin"), join(rocm_path, "llvm", "bin")]
+    except RuntimeError:
+        pass
+
+    candidates = [join(d, n) for d in dirs for n in ["ld.lld"]] + names
+    valid_list = []
+    for cand in candidates:
+        path = shutil.which(cand)
+        if path and path not in valid_list:
+            valid_list.append(path)
     if not valid_list and required:
-        raise RuntimeError("cannot find ld.lld, candidates are: " + str(lld_list))
+        raise RuntimeError("cannot find ld.lld, candidates are: " + str(candidates))
     return valid_list
 
 
@@ -124,57 +140,118 @@ def callback_rocm_link(obj_bin):
     return cobj_bin
 
 
+def find_rocm_bitcode_dir(rocm_path=None):
+    """Find the directory holding the ROCm device library bitcode (ocml.bc, oclc_*.bc).
+
+    Checks ``HIP_DEVICE_LIB_PATH``, then ``<root>/lib/llvm/amdgcn/bitcode`` (ROCm 7+ and
+    TheRock), ``<root>/amdgcn/bitcode`` (ROCm 3.9 to 6.x),
+    ``<root>/lib/llvm/lib/clang/*/lib/amdgcn/bitcode`` and ``<root>/lib`` (ROCm <= 3.8).
+    """
+    env_dir = os.environ.get("HIP_DEVICE_LIB_PATH")
+    candidates = [env_dir] if env_dir else []
+    if rocm_path is None:
+        rocm_path = find_rocm_path()
+    candidates += [
+        join(rocm_path, "lib", "llvm", "amdgcn", "bitcode"),
+        join(rocm_path, "amdgcn", "bitcode"),
+    ]
+    clang_dir = join(rocm_path, "lib", "llvm", "lib", "clang")
+    if isdir(clang_dir):
+        for ver in sorted(os.listdir(clang_dir), reverse=True):
+            candidates.append(join(clang_dir, ver, "lib", "amdgcn", "bitcode"))
+    candidates.append(join(rocm_path, "lib"))
+    for cand in candidates:
+        if exists(join(cand, "ocml.bc")) or exists(join(cand, "ocml.amdgcn.bc")):
+            return cand
+    raise RuntimeError(
+        "Cannot find the ROCm device library bitcode (ocml.bc). Looked in: " + str(candidates)
+    )
+
+
 @tvm_ffi.register_global_func("tvm_callback_rocm_bitcode_path")
-def callback_rocm_bitcode_path(rocdl_dir=None):
-    """Utility function to find ROCm device library bitcodes
+def callback_rocm_bitcode_path(arch=None, wavefront_size=None, rocdl_dir=None):
+    """Utility function to find the ROCm device library bitcodes to link
 
     Parameters
     ----------
-    rocdl_dir : str
-        The path to rocm library directory
-        The default value is the standard location
+    arch : str, optional
+        The target GPU, e.g. "gfx1101" (feature suffixes like ":xnack-" are ignored).
+        Defaults to the detected GPU.
+
+    wavefront_size : int, optional
+        32 or 64. Defaults to 32 on gfx10 and newer, 64 otherwise.
+
+    rocdl_dir : str, optional
+        The bitcode directory. Defaults to :py:func:`find_rocm_bitcode_dir`.
+
+    Returns
+    -------
+    bitcode_files : list of str
+        ocml plus exactly one oclc_* control library per setting. The control libraries
+        define the same constants, so linking both the on and off variants would let the
+        first one silently win.
     """
-    # seems link order matters.
-
     if rocdl_dir is None:
-        rocm_path = find_rocm_path()
-        amdgcn_path = f"{rocm_path}/amdgcn/bitcode/"
-        if exists(amdgcn_path):
-            rocdl_dir = amdgcn_path  # starting with rocm 3.9
-        else:
-            rocdl_dir = "/opt/rocm/lib/"  # until rocm 3.8
+        rocdl_dir = find_rocm_bitcode_dir()
+    if not arch:
+        arch = get_rocm_arch()
+    arch = str(arch).split(":")[0]
+    isa = arch[3:] if arch.startswith("gfx") else arch
+    if wavefront_size is None:
+        wavefront_size = 32 if _gfx_major(isa) >= 10 else 64
+    wavefront_size = int(wavefront_size)
 
-    bitcode_names = [
-        "oclc_daz_opt_on",
-        "ocml",
-        "irif",  # this does not exist in rocm 3.9, drop eventually
-        "oclc_correctly_rounded_sqrt_off",
-        "oclc_correctly_rounded_sqrt_on",
-        "oclc_daz_opt_off",
-        "oclc_finite_only_off",
-        "oclc_finite_only_on",
-        # todo (t-vi): an alternative might be to scan for the
-        "oclc_isa_version_803",
-        "oclc_isa_version_900",  # isa version files (if the linker throws out
-        "oclc_isa_version_906",  # the unneeded ones or we filter for the arch we need)
-        "oclc_isa_version_1030",
-        "oclc_unsafe_math_off",
-        "oclc_unsafe_math_on",
-        "oclc_wavefrontsize64_on",
-        "oclc_abi_version_500",
-    ]
+    def find(name):
+        for fname in (name + ".bc", name + ".amdgcn.bc"):  # rocm >= 3.9, rocm <= 3.8
+            path = join(rocdl_dir, fname)
+            if exists(path):
+                return path
+        return None
 
     bitcode_files = []
-    for n in bitcode_names:
-        p = join(rocdl_dir, n + ".bc")  # rocm >= 3.9
-        if not exists(p):  # rocm <= 3.8
-            p = join(rocdl_dir, n + ".amdgcn.bc")
-        if exists(p):
-            bitcode_files.append(p)
-        elif "isa_version" not in n and n not in {"irif"}:
-            raise RuntimeError("could not find bitcode " + n)
+    ocml = find("ocml")
+    if ocml is None:
+        raise RuntimeError("could not find bitcode ocml in " + rocdl_dir)
+    bitcode_files.append(ocml)
+
+    # Control libraries. ROCm 7+ dropped oclc_daz_opt_* and oclc_correctly_rounded_sqrt_*
+    # (denormal/sqrt behaviour now comes from function attributes), so those are optional.
+    wave = "on" if wavefront_size == 64 else "off"
+    for name in (
+        "oclc_daz_opt_on",
+        "oclc_correctly_rounded_sqrt_off",
+        "oclc_finite_only_off",
+        "oclc_unsafe_math_off",
+        f"oclc_wavefrontsize64_{wave}",
+    ):
+        path = find(name)
+        if path:
+            bitcode_files.append(path)
+
+    isa_file = find(f"oclc_isa_version_{isa}")
+    if isa_file:
+        bitcode_files.append(isa_file)
+    else:
+        warnings.warn(
+            f"No ROCm device library for gfx{isa} (oclc_isa_version_{isa}) in {rocdl_dir}"
+        )
+
+    # Code object ABI: v5 is LLVM's default; fall back to the newest available.
+    abi = find("oclc_abi_version_500")
+    if abi is None:
+        abis = sorted(f for f in os.listdir(rocdl_dir) if re.match(r"oclc_abi_version_\d+\.bc$", f))
+        abi = join(rocdl_dir, abis[-1]) if abis else None
+    if abi:
+        bitcode_files.append(abi)
 
     return tvm.runtime.convert(bitcode_files)
+
+
+def _gfx_major(isa):
+    """GFX major version from the part after "gfx": "1101" -> 11, "90a" -> 9."""
+    digits = isa if len(isa) <= 2 else (isa[:2] if len(isa) >= 4 else isa[:1])
+    match = re.match(r"\d+", digits)
+    return int(match.group(0)) if match else 0
 
 
 def parse_compute_version(compute_version):
@@ -240,35 +317,45 @@ def get_rocm_arch(rocm_path=None):
     Returns
     -------
     gpu_arch : str
-        The AMD GPU architecture
+        The AMD GPU architecture, e.g. "gfx1101". Queried from the HIP runtime, then
+        amdgpu-arch / offload-arch, then rocminfo (Linux). Falls back to "gfx900".
     """
+    gpu_arch = "gfx900"
+    try:
+        dev = tvm.rocm(0)
+        if dev.exist:
+            arch = dev._GetDeviceAttr(dev.dlpack_device_type(), dev.index, 10)  # kGcnArch
+            if arch:
+                return str(arch).split(":")[0]
+    except Exception:  # pylint: disable=broad-except
+        pass
+
     if rocm_path is None:
         try:
             rocm_path = find_rocm_path()
         except RuntimeError:
             rocm_path = None
-
-    gpu_arch = "gfx900"
-    # check if rocm is installed
-    if rocm_path is None or not os.path.exists(rocm_path):
-        print("ROCm not detected, using default gfx900")
-        return gpu_arch
-    try:
-        # Execute rocminfo command
-        rocminfo_output = subprocess.check_output([f"{rocm_path}/bin/rocminfo"]).decode("utf-8")
-
-        # Use regex to match the "Name" field
-        match = re.search(r"Name:\s+(gfx\d+[a-zA-Z]*)", rocminfo_output)
+    tools = []
+    for tool in ("amdgpu-arch", "offload-arch"):
+        if rocm_path:
+            tools.append(join(rocm_path, "lib", "llvm", "bin", tool))
+            tools.append(join(rocm_path, "llvm", "bin", tool))
+        tools.append(tool)
+    if rocm_path:
+        tools.append(join(rocm_path, "bin", "rocminfo"))
+    for tool in tools:
+        exe = shutil.which(tool)
+        if not exe:
+            continue
+        try:
+            out = subprocess.check_output([exe], stderr=subprocess.STDOUT, timeout=60)
+        except (subprocess.SubprocessError, OSError):
+            continue
+        match = re.search(r"(gfx[0-9a-f]+)", out.decode("utf-8", errors="replace"))
         if match:
-            gpu_arch = match.group(1)
-        return gpu_arch
-    except subprocess.CalledProcessError:
-        print(
-            f"Unable to execute rocminfo command, \
-                please ensure ROCm is installed and you have an AMD GPU on your system.\
-                    using default {gpu_arch}."
-        )
-        return gpu_arch
+            return match.group(1)
+    print(f"ROCm GPU architecture not detected, using default {gpu_arch}")
+    return gpu_arch
 
 
 def find_rocm_path():
@@ -277,17 +364,21 @@ def find_rocm_path():
     Returns
     -------
     path : str
-        Path to ROCm root.
+        Path to ROCm root: ``ROCM_PATH``, then ``HIP_PATH`` (empty values count as unset),
+        then the root of hipconfig / amdclang found on PATH, then ``/opt/rocm`` (not on
+        Windows).
     """
-    if "ROCM_PATH" in os.environ:
-        return os.environ["ROCM_PATH"]
-    cmd = ["which", "hipcc"]
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-    (out, _) = proc.communicate()
-    out = out.decode("utf-8", errors="replace").strip()
-    if proc.returncode == 0:
-        return os.path.realpath(os.path.join(out, "../.."))
-    rocm_path = "/opt/rocm"
-    if os.path.exists(os.path.join(rocm_path, "bin/hipcc")):
-        return rocm_path
-    raise RuntimeError("Cannot find ROCm path")
+    for var in ("ROCM_PATH", "HIP_PATH"):
+        value = os.environ.get(var)
+        if value and isdir(value):
+            return value
+    hipconfig = shutil.which("hipconfig")
+    if hipconfig:
+        return os.path.dirname(os.path.dirname(os.path.realpath(hipconfig)))
+    amdclang = shutil.which("amdclang")
+    if amdclang:
+        # <root>/lib/llvm/bin/amdclang
+        return os.path.realpath(join(os.path.dirname(amdclang), "..", "..", ".."))
+    if os.name != "nt" and exists("/opt/rocm"):
+        return "/opt/rocm"
+    raise RuntimeError("Cannot find ROCm path: set ROCM_PATH or HIP_PATH")
