@@ -27,6 +27,7 @@
 #include <tvm/runtime/logging.h>
 
 #include <memory>
+#include <mutex>
 #include <string>
 
 #include "../../../support/utils.h"
@@ -101,8 +102,13 @@ static ffi::Map<ffi::String, ffi::Any> GetFeatures(ffi::Map<ffi::String, ffi::An
   ffi::Array<ffi::String> targets = llvm_backend.GetAllLLVMTargets();
   if ((IsAArch64(mtriple) && !CheckContains(targets, "aarch64")) ||
       (IsAArch32(mtriple, mcpu) && !CheckContains(targets, "arm"))) {
-    LOG(WARNING) << "Cannot parse target features for target: " << target
-                 << ". LLVM was not compiled with support for Arm(R)-based targets.";
+    // Built-in Arm target tags are canonicalized at startup, so with an LLVM that has no Arm
+    // backend (e.g. ROCm's) this would fire for every tag. Warn once per process.
+    static std::once_flag warned;
+    std::call_once(warned, [&]() {
+      LOG(WARNING) << "Cannot parse target features for target: " << target
+                   << ". LLVM was not compiled with support for Arm(R)-based targets.";
+    });
     return {};
   }
 

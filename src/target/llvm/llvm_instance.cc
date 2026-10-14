@@ -190,6 +190,9 @@ std::ostream& operator<<(std::ostream& os, const LLVMTargetInfo::Option& opt) {
   return os;
 }
 
+static const llvm::Target* CreateLLVMTargetInstance(const std::string triple,
+                                                    const bool allow_missing);
+
 LLVMTargetInfo::LLVMTargetInfo(LLVMInstance& instance, const Target& target)
     : LLVMTargetInfo(instance, target->ToConfig()) {}
 
@@ -214,10 +217,15 @@ LLVMTargetInfo::LLVMTargetInfo(LLVMInstance& instance,
     bool has_arch = IsValidCPU(cpu_);
     if (!has_arch) {
       // Flag an error, but don't abort. This mimicks the behaviour of 'llc' to
-      // give the code a chance to run with a less-specific target.
-      LOG(ERROR) << "Using LLVM " << LLVM_VERSION_STRING << " with `-mcpu=" << cpu_
-                 << "` is not valid in `-mtriple=" << triple_ << "`"
-                 << ", using default `-mcpu=" << ffi::String(defaults::cpu) << "`";
+      // give the code a chance to run with a less-specific target. Stay quiet when this LLVM
+      // has no backend for the triple at all (e.g. ROCm's LLVM has no AArch64): every CPU
+      // is then "invalid", and built-in target tags for such triples are canonicalized at
+      // startup even though nothing is compiled for them.
+      if (CreateLLVMTargetInstance(triple_, true) != nullptr) {
+        LOG(ERROR) << "Using LLVM " << LLVM_VERSION_STRING << " with `-mcpu=" << cpu_
+                   << "` is not valid in `-mtriple=" << triple_ << "`"
+                   << ", using default `-mcpu=" << ffi::String(defaults::cpu) << "`";
+      }
       // LLVM default cpu fallback
       cpu_ = ffi::String(defaults::cpu);
     }
