@@ -373,7 +373,9 @@ def _linux_compile(
 
 def _windows_compile(output, objects, options, cwd=None, ccache_env=None):
     compiler = os.getenv("TVM_WIN_CC", default="clang")
-    win_target = os.getenv("TVM_WIN_TARGET", default="x86_64")
+    # A bare "x86_64" leaves the OS to clang's default triple; a clang whose default is not
+    # *-windows-msvc (e.g. ROCm's) then links through gcc. Name the MSVC triple explicitly.
+    win_target = os.getenv("TVM_WIN_TARGET", default="x86_64-pc-windows-msvc")
     cmd = [compiler]
     cmd += ["-O2"]
     cmd += ["--target=" + win_target]
