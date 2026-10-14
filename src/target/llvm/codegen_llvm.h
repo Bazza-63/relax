@@ -437,6 +437,13 @@ class CodeGenLLVM : public tirx::ExprFunctor<llvm::Value*(const Expr&)>,
    */
   llvm::Type* GetLLVMType(const PrimExpr& expr) const;
   /*!
+   * \brief Get the LLVM type of a TIR pointer type, in the address space of an existing value.
+   * \param type The TVM pointer type.
+   * \param value The LLVM value the result will be cast from; if it is a pointer, the result
+   *        uses its address space instead of the global one GetLLVMType assumes.
+   */
+  llvm::Type* GetLLVMPointerTypeLike(const Type& type, llvm::Value* value) const;
+  /*!
    * \brief Get the declaration of the LLVM intrinsic based on the intrinsic
    *        id, and the type of the actual call.
    *

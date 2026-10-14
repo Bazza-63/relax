@@ -197,5 +197,71 @@ def test_export_load_with_fallback(monkeypatch, tmp_path):
     tvm.testing.run_with_gpu_lock(run_and_check)
 
 
+@pytest.mark.gpu
+@pytest.mark.skipif(not env.has_rocm(), reason="need rocm")
+def test_rocm_shared_memory_views_keep_address_space():
+    """Typed views over a merged shared allocation must stay in the shared address space.
+
+    StorageRewrite merges the fp16 K tile and the fp32 S tile of the paged-attention prefill
+    kernel into one shared allocation and declares a view per dtype over it. The LLVM codegen
+    used to cast such views to the global address space, so the kernel dereferenced an LDS
+    offset as a global address and faulted (gfx1101, ROCm 7).
+    """
+    import math
+
+    from tvm.relax.frontend.nn.llm.kv_cache import _attention_prefill_ragged
+    from tvm.s_tir import dlight as dl
+
+    h_kv, h_q, d, dtype, n = 2, 14, 64, "float16", 20
+    dev = tvm.rocm(0)
+    target = tvm.target.Target.from_device(dev)
+    mod = tvm.IRModule({"main": _attention_prefill_ragged(h_kv, h_q, d, d, dtype, {}, target)})
+    with target:
+        mod = dl.ApplyDefaultSchedule(dl.gpu.Fallback())(mod)
+    built = tvm.tirx.build(mod["main"], target=target)
+    (dev_mod,) = built.imports
+    llvm_ir = dev_mod.inspect_source("hip")
+    assert "addrspacecast" not in llvm_ir, "a shared-memory view was cast to another address space"
+
+    def run_and_check():
+        rng = np.random.default_rng(0)
+        q = rng.standard_normal((n, h_q, d)).astype(dtype)
+        k = rng.standard_normal((n, h_kv, d)).astype(dtype)
+        v = rng.standard_normal((n, h_kv, d)).astype(dtype)
+        indptr = np.array([0, n], dtype="int32")
+        sm_scale = 1.0 / math.sqrt(d)
+        out = tvm.runtime.empty((n, h_q, d), dtype, dev)
+        lse = tvm.runtime.empty((n, h_q), "float32", dev)
+        built.main(
+            tvm.runtime.tensor(q, dev),
+            tvm.runtime.tensor(indptr, dev),
+            tvm.runtime.tensor(k, dev),
+            tvm.runtime.tensor(v, dev),
+            tvm.runtime.tensor(indptr, dev),
+            tvm.runtime.tensor(np.arange(n, dtype="int32"), dev),
+            tvm.runtime.tensor(np.zeros(1, dtype="int32"), dev),
+            out,
+            lse,
+            1,  # causal
+            0,  # rotary_mode: none
+            1.0,  # rope_scale
+            1e4,  # rope_theta
+            sm_scale,
+        )
+        dev.sync()
+
+        group = h_q // h_kv
+        qf, kf, vf = (x.astype("float32") for x in (q, k, v))
+        ref = np.zeros((n, h_q, d), "float32")
+        for h in range(h_q):
+            s = (qf[:, h, :] @ kf[:, h // group, :].T) * sm_scale
+            s = np.where(np.tril(np.ones((n, n), bool)), s, -np.inf)
+            p = np.exp(s - s.max(axis=1, keepdims=True))
+            ref[:, h, :] = (p / p.sum(axis=1, keepdims=True)) @ vf[:, h // group, :]
+        tvm.testing.assert_allclose(out.numpy().astype("float32"), ref, rtol=1e-2, atol=1e-2)
+
+    tvm.testing.run_with_gpu_lock(run_and_check)
+
+
 if __name__ == "__main__":
     tvm.testing.main()

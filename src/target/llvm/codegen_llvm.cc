@@ -663,6 +663,24 @@ llvm::Type* CodeGenLLVM::GetLLVMType(const PrimExpr& expr) const {
   return GetLLVMType(GetType(expr));
 }
 
+llvm::Type* CodeGenLLVM::GetLLVMPointerTypeLike(const Type& type, llvm::Value* value) const {
+  llvm::Type* llvm_type = GetLLVMType(type);
+  auto* value_ptr_type = llvm::dyn_cast<llvm::PointerType>(value->getType());
+  if (value_ptr_type == nullptr || !llvm_type->isPointerTy() ||
+      llvm_type->getPointerAddressSpace() == value_ptr_type->getAddressSpace()) {
+    return llvm_type;
+  }
+  // GetLLVMType() puts every pointer in the global address space, but a pointer derived from
+  // shared or local memory on a GPU target (AMDGPU: address spaces 3 and 5) must stay there.
+  // Casting it to the global address space would make the backend dereference e.g. an LDS
+  // offset as a global address.
+#if TVM_LLVM_VERSION >= 170
+  return llvm::PointerType::get(llvm_type->getContext(), value_ptr_type->getAddressSpace());
+#else
+  return llvm_type->getPointerElementType()->getPointerTo(value_ptr_type->getAddressSpace());
+#endif
+}
+
 // Add tbaa alias information for load
 //
 // use a binary tree typed system to declare information
@@ -2311,7 +2329,7 @@ void CodeGenLLVM::Dispatch_(const BindNode* op) {
     TVM_FFI_ICHECK(op->value->ty.as<PointerTypeNode>())
         << "Variable " << op->var << " is a pointer with type " << op->value
         << ", but is being bound to expression with type " << op->value->ty;
-    auto* llvm_type = GetLLVMType(v->ty);
+    llvm::Type* llvm_type = GetLLVMPointerTypeLike(v->ty, value);
     if (llvm_type != value->getType()) {
       value->setName((v->name + "_void_ptr").c_str());
       value = builder_->CreatePointerCast(value, llvm_type);
@@ -2359,7 +2377,9 @@ void CodeGenLLVM::DispatchDeclTensor(const BindNode* op, const CallNode* buffer_
     buffer_physical_root_[buffer_var] = GetBufferPhysicalRoot(source);
   }
 
-  llvm::Type* expected_type = GetLLVMType(PointerType(PrimType(dtype), scope));
+  // A view keeps the address space of the memory it points to (see GetLLVMPointerTypeLike):
+  // StorageRewrite declares views of other dtypes over merged shared allocations.
+  llvm::Type* expected_type = GetLLVMPointerTypeLike(PointerType(PrimType(dtype), scope), value);
   if (value->getType() != expected_type) {
     value->setName((buffer.name() + "_source_ptr").c_str());
     value = builder_->CreatePointerCast(value, expected_type);
