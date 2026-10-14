@@ -32,6 +32,8 @@
 #include <tvm/ffi/reflection/registry.h>
 
 #include <array>
+#include <cstdio>
+#include <cstdlib>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -179,11 +181,35 @@ class ROCMWrappedFunc {
     ThreadWorkLoad wl = launch_param_config_.Extract(args);
     void* config[] = {HIP_LAUNCH_PARAM_BUFFER_POINTER, packed_args, HIP_LAUNCH_PARAM_BUFFER_SIZE,
                       &packed_nbytes, HIP_LAUNCH_PARAM_END};
+    // TVM_ROCM_LOG_LAUNCHES=1 prints every launch before it is issued. A faulting or hanging
+    // kernel can reset the display driver on Windows without any error reaching the process;
+    // with AMD_SERIALIZE_KERNEL=3 the last line printed then names the culprit.
+    static const bool log_launches = [] {
+      const char* v = std::getenv("TVM_ROCM_LOG_LAUNCHES");
+      return v != nullptr && v[0] != '\0' && v[0] != '0';
+    }();
+    if (log_launches) {
+      std::fprintf(stderr,
+                   "[TVM ROCm] launch %s grid=(%zu,%zu,%zu) block=(%zu,%zu,%zu) shmem=%zu\n",
+                   func_name_.c_str(), wl.grid_dim(0), wl.grid_dim(1), wl.grid_dim(2),
+                   wl.block_dim(0), wl.block_dim(1), wl.block_dim(2), wl.dyn_shmem_size);
+      std::fflush(stderr);
+    }
     // HIP supports only extra_args.
-    ROCM_DRIVER_CALL(hipModuleLaunchKernel(fcache_[device_id], wl.grid_dim(0), wl.grid_dim(1),
-                                           wl.grid_dim(2), wl.block_dim(0), wl.block_dim(1),
-                                           wl.block_dim(2), wl.dyn_shmem_size, strm, nullptr,
-                                           reinterpret_cast<void**>(&config)));
+    hipError_t result =
+        hipModuleLaunchKernel(fcache_[device_id], wl.grid_dim(0), wl.grid_dim(1), wl.grid_dim(2),
+                              wl.block_dim(0), wl.block_dim(1), wl.block_dim(2), wl.dyn_shmem_size,
+                              strm, nullptr, reinterpret_cast<void**>(&config));
+    if (result != hipSuccess && result != hipErrorDeinitialized) {
+      TVM_FFI_THROW(InternalError)
+          << "ROCM HIP Error: hipModuleLaunchKernel failed with error: "
+          << hipGetErrorString(result) << " (kernel " << func_name_ << ", grid=(" << wl.grid_dim(0)
+          << "," << wl.grid_dim(1) << "," << wl.grid_dim(2) << "), block=(" << wl.block_dim(0)
+          << "," << wl.block_dim(1) << "," << wl.block_dim(2)
+          << "), dyn_shmem=" << wl.dyn_shmem_size
+          << "). Errors from earlier asynchronous kernels can surface here; set "
+             "AMD_SERIALIZE_KERNEL=3 to attribute them to the right launch.";
+    }
   }
 
  private:
