@@ -83,8 +83,14 @@ if(USE_ROCM AND USE_HIPBLAS)
   target_link_libraries(tvm_hipblas_objs PRIVATE tvm_runtime_extra_defs)
   target_link_libraries(tvm_runtime_extra PRIVATE tvm_hipblas_objs ${ROCM_HIPBLAS_LIBRARY}
                         ${ROCM_HIPHCC_LIBRARY})
-  if(NOT ROCM_HIPBLASLT_LIBRARY STREQUAL "ROCM_HIPBLASLT_LIBRARY-NOTFOUND")
+  # The hipBLAS contrib calls hipBLASLt directly, so it must be linked.
+  if(ROCM_HIPBLASLT_LIBRARY)
     target_link_libraries(tvm_runtime_extra PRIVATE ${ROCM_HIPBLASLT_LIBRARY})
+  elseif(ROCM_HIPBLASLT_TARGET)
+    target_link_libraries(tvm_runtime_extra PRIVATE ${ROCM_HIPBLASLT_TARGET})
+  else()
+    message(FATAL_ERROR "USE_HIPBLAS needs hipBLASLt, but neither its library nor its CMake "
+                        "package was found under ${ROCM_ROOT}")
   endif()
 endif(USE_ROCM AND USE_HIPBLAS)
 

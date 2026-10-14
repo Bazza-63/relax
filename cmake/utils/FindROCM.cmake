@@ -32,6 +32,7 @@
 # - ROCM_INCLUDE_DIRS
 # - ROCM_HIPHCC_LIBRARY
 # - ROCM_HIPBLAS_LIBRARY, ROCM_HIPBLASLT_LIBRARY (if found)
+# - ROCM_HIPBLASLT_TARGET (roc::hipblaslt, if only hipBLASLt's CMake package was found)
 # - ROCM_HIP_DLL_NAMES, ROCM_HIPBLAS_DLL_NAMES (Windows only: DLL file names in <root>/bin)
 #
 
@@ -70,7 +71,14 @@ macro(find_rocm use_rocm)
     find_library(ROCM_HIPHCC_LIBRARY amdhip64 PATHS ${__rocm_lib_dirs} NO_DEFAULT_PATH)
     find_library(ROCM_HIPBLAS_LIBRARY hipblas PATHS ${__rocm_lib_dirs} NO_DEFAULT_PATH)
     find_library(ROCM_HIPBLASLT_LIBRARY NAMES hipblaslt libhipblaslt PATHS ${__rocm_lib_dirs}
-                 NO_DEFAULT_PATH)
+                 PATH_SUFFIXES "" hipblaslt NO_DEFAULT_PATH)
+    if(NOT ROCM_HIPBLASLT_LIBRARY)
+      # Fall back to hipBLASLt's CMake package (roc::hipblaslt carries the import library).
+      find_package(hipblaslt CONFIG QUIET PATHS ${__rocm_sdk} NO_DEFAULT_PATH)
+      if(TARGET roc::hipblaslt)
+        set(ROCM_HIPBLASLT_TARGET roc::hipblaslt)
+      endif()
+    endif()
 
     if(WIN32)
       # Import libraries name the DLLs (e.g. amdhip64.lib -> amdhip64_7.dll). They are
@@ -93,6 +101,9 @@ macro(find_rocm use_rocm)
     message(STATUS "Found ROCM_HIPHCC_LIBRARY=" ${ROCM_HIPHCC_LIBRARY})
     message(STATUS "Found ROCM_HIPBLAS_LIBRARY=" ${ROCM_HIPBLAS_LIBRARY})
     message(STATUS "Found ROCM_HIPBLASLT_LIBRARY=" ${ROCM_HIPBLASLT_LIBRARY})
+    if(ROCM_HIPBLASLT_TARGET)
+      message(STATUS "Found ROCM_HIPBLASLT_TARGET=" ${ROCM_HIPBLASLT_TARGET})
+    endif()
     if(WIN32)
       message(STATUS "Found ROCM_HIP_DLL_NAMES=" "${ROCM_HIP_DLL_NAMES}")
       message(STATUS "Found ROCM_HIPBLAS_DLL_NAMES=" "${ROCM_HIPBLAS_DLL_NAMES}")
