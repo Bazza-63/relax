@@ -188,7 +188,21 @@ macro(find_llvm use_llvm)
       endif()
     endif()
     separate_arguments(__llvm_system_libs)
+    file(TO_CMAKE_PATH "${__llvm_libdir}" __llvm_libdir_cmake)
     foreach(__flag IN ITEMS ${__llvm_system_libs})
+      # ROCm's LLVM on Windows (TheRock, <root>/lib/llvm) is built against ROCm's own static
+      # third-party libraries in <root>/lib/rocm_sysdeps/lib, and --system-libs records only
+      # their bare names (e.g. "zs.lib", the static zlib). Link those by full path.
+      set(__llvm_sysdep_lib "")
+      if(WIN32 AND ("${__flag}" MATCHES "^[A-Za-z0-9_.+-]+\\.lib$")
+         AND NOT EXISTS "${__llvm_libdir}/${__flag}")
+        foreach(__dir "${__llvm_libdir_cmake}/../../rocm_sysdeps/lib" "${__llvm_libdir_cmake}/../..")
+          if(EXISTS "${__dir}/${__flag}")
+            get_filename_component(__llvm_sysdep_lib "${__dir}/${__flag}" ABSOLUTE)
+            break()
+          endif()
+        endforeach()
+      endif()
       if("${__flag}" STREQUAL "-lm")
         message(STATUS "LLVM links against math")
         list(APPEND LLVM_LIBS "m")
@@ -217,31 +231,9 @@ macro(find_llvm use_llvm)
           message(STATUS "LLVM linker flag under LLVM libdir: ${__llvm_libdir}/zstd.lib")
           list(APPEND LLVM_LIBS "${__llvm_libdir}/zstd.lib")
         endif()
-      elseif(WIN32 AND ("${__flag}" MATCHES "^(zs|zstd|zstd_static|libzstd_static)\\.lib$")
-             AND NOT EXISTS "${__llvm_libdir}/${__flag}")
-        # LLVM built against a static zstd records the bare static library name in
-        # --system-libs (e.g. "zs.lib" from ROCm/TheRock), not a path. Resolve the real
-        # library: zstd's CMake package first, then the static library by name next to
-        # LLVM or in TheRock's rocm_sysdeps.
-        file(TO_CMAKE_PATH "${__llvm_libdir}" __llvm_libdir_cmake)
-        set(__zstd_dirs "${__llvm_libdir_cmake}" "${__llvm_libdir_cmake}/../../rocm_sysdeps/lib"
-                        "${__llvm_libdir_cmake}/../..")
-        find_package(zstd CONFIG QUIET NO_DEFAULT_PATH
-                     PATHS ${__zstd_dirs} PATH_SUFFIXES cmake/zstd cmake)
-        if(TARGET zstd::libzstd_static)
-          message(STATUS "LLVM links against static zstd (zstd::libzstd_static) for ${__flag}")
-          list(APPEND LLVM_LIBS "zstd::libzstd_static")
-        else()
-          find_library(TVM_LLVM_ZSTD_LIBRARY NAMES zstd_static libzstd_static zstd zs
-                       PATHS ${__zstd_dirs} NO_DEFAULT_PATH)
-          if(NOT TVM_LLVM_ZSTD_LIBRARY)
-            message(FATAL_ERROR "LLVM needs zstd (${__flag} from llvm-config --system-libs) "
-                    "but no static zstd library was found in: ${__zstd_dirs}. "
-                    "Set TVM_LLVM_ZSTD_LIBRARY to the zstd .lib file.")
-          endif()
-          message(STATUS "LLVM links against static zstd: ${TVM_LLVM_ZSTD_LIBRARY} (for ${__flag})")
-          list(APPEND LLVM_LIBS "${TVM_LLVM_ZSTD_LIBRARY}")
-        endif()
+      elseif(__llvm_sysdep_lib)
+        message(STATUS "LLVM linker flag under ROCm sysdeps: ${__llvm_sysdep_lib}")
+        list(APPEND LLVM_LIBS "${__llvm_sysdep_lib}")
       elseif((__flag MATCHES ".lib$") AND (EXISTS "${__llvm_libdir}/${__flag}"))
         # If the library file ends in .lib try to also search the llvm_libdir
         message(STATUS "LLVM linker flag under LLVM libdir: ${__llvm_libdir}/${__flag}")
