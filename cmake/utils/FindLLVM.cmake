@@ -247,6 +247,34 @@ macro(find_llvm use_llvm)
         list(APPEND LLVM_LIBS "${__flag}")
       endif()
     endforeach()
+    # ROCm's LLVM on Windows (TheRock) also uses ROCm's static zstd, but --system-libs omits
+    # it. If LLVM was built with zstd and nothing above linked it, add it from rocm_sysdeps.
+    if(WIN32 AND NOT ("${LLVM_LIBS}" MATCHES "zstd"))
+      set(__llvm_enable_zstd "")
+      if(EXISTS "${__llvm_cmakedir}/LLVMConfig.cmake")
+        file(STRINGS "${__llvm_cmakedir}/LLVMConfig.cmake" __llvm_enable_zstd
+             REGEX "^set\\(LLVM_ENABLE_ZSTD ")
+      endif()
+      if("${__llvm_enable_zstd}" MATCHES "^set\\(LLVM_ENABLE_ZSTD (ON|FORCE_ON|TRUE|YES|1)\\)")
+        set(__zstd_dirs "${__llvm_libdir_cmake}/../../rocm_sysdeps/lib" "${__llvm_libdir_cmake}")
+        find_package(zstd CONFIG QUIET NO_DEFAULT_PATH PATHS ${__zstd_dirs}
+                     PATH_SUFFIXES cmake/zstd)
+        if(TARGET zstd::libzstd_static)
+          message(STATUS "LLVM links against static zstd (zstd::libzstd_static)")
+          list(APPEND LLVM_LIBS "zstd::libzstd_static")
+        else()
+          find_library(TVM_LLVM_ZSTD_LIBRARY NAMES zstd_static zstd PATHS ${__zstd_dirs}
+                       NO_DEFAULT_PATH)
+          if(NOT TVM_LLVM_ZSTD_LIBRARY)
+            message(FATAL_ERROR "LLVM was built with zstd (LLVM_ENABLE_ZSTD in "
+                    "${__llvm_cmakedir}/LLVMConfig.cmake) but no zstd library was found in: "
+                    "${__zstd_dirs}. Set TVM_LLVM_ZSTD_LIBRARY to the zstd .lib file.")
+          endif()
+          message(STATUS "LLVM links against zstd: ${TVM_LLVM_ZSTD_LIBRARY}")
+          list(APPEND LLVM_LIBS "${TVM_LLVM_ZSTD_LIBRARY}")
+        endif()
+      endif()
+    endif()
   endif()
   message(STATUS "Found LLVM_INCLUDE_DIRS=" "${LLVM_INCLUDE_DIRS}")
   message(STATUS "Found LLVM_DEFINITIONS=" "${LLVM_DEFINITIONS}")
