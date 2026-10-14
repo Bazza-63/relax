@@ -482,6 +482,11 @@ void CodeGenCPU::InitGlobalContext(bool dynamic_lookup) {
       gv_tvm_ffi_set_last_error_c_str_ =
           InitContextPtr(llvmGetPointerTo(ftype_tvm_ffi_error_set_raised_by_c_str_, 0),
                          "__TVMFFIErrorSetRaisedFromCStr");
+      // Through a context pointer like the others: a direct external reference only works where
+      // shared libraries may leave symbols undefined (ELF); a Windows DLL fails to link.
+      gv_tvm_ffi_set_raised_from_c_str_parts_ =
+          InitContextPtr(llvmGetPointerTo(ftype_tvm_ffi_error_set_raised_from_c_str_parts_, 0),
+                         "__TVMFFIErrorSetRaisedFromCStrParts");
       gv_tvm_parallel_launch_ = InitContextPtr(llvmGetPointerTo(ftype_tvm_parallel_launch_, 0),
                                                "__TVMBackendParallelLaunch");
       gv_tvm_parallel_barrier_ = InitContextPtr(llvmGetPointerTo(ftype_tvm_parallel_barrier_, 0),
@@ -956,9 +961,22 @@ llvm::Function* CodeGenCPU::GetOrCreateSetRaisedHelper(int max_n) {
   llvm::Value* parts_ptr =
       b.CreateInBoundsGEP(arr_type, parts_alloca, {ConstInt32(0), ConstInt32(0)});
 
-  // Call TVMFFIErrorSetRaisedFromCStrParts(kind, parts, n)
-  auto callee = llvm::FunctionCallee(ftype_tvm_ffi_error_set_raised_from_c_str_parts_,
-                                     RuntimeTVMFFIErrorSetRaisedFromCStrParts());
+  // Call TVMFFIErrorSetRaisedFromCStrParts(kind, parts, n). Without dynamic lookup (e.g. a
+  // Windows DLL) it goes through its context pointer, loaded here with this helper's builder.
+  llvm::Value* set_raised_fn;
+  if (f_tvm_ffi_set_raised_from_c_str_parts_ == nullptr &&
+      gv_tvm_ffi_set_raised_from_c_str_parts_ != nullptr) {
+    llvm::GlobalVariable* gv = gv_tvm_ffi_set_raised_from_c_str_parts_;
+    llvm::LoadInst* faddr =
+        b.CreateAlignedLoad(gv->getValueType(), gv, llvm::Align(gv->getAlignment()));
+    faddr->setMetadata("tbaa",
+                       md_builder_->createTBAAStructTagNode(md_tbaa_ctx_ptr_, md_tbaa_ctx_ptr_, 0));
+    set_raised_fn = faddr;
+  } else {
+    set_raised_fn = RuntimeTVMFFIErrorSetRaisedFromCStrParts();
+  }
+  auto callee =
+      llvm::FunctionCallee(ftype_tvm_ffi_error_set_raised_from_c_str_parts_, set_raised_fn);
   b.CreateCall(callee, {kind_arg, parts_ptr, n_arg});
   b.CreateRetVoid();
 

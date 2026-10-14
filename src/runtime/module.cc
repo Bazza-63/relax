@@ -78,6 +78,7 @@ TVM_FFI_STATIC_INIT_BLOCK() {
   // Initialize the functions
   TVM_INIT_CONTEXT_FUNC(TVMFFIFunctionCall);
   TVM_INIT_CONTEXT_FUNC(TVMFFIErrorSetRaisedFromCStr);
+  TVM_INIT_CONTEXT_FUNC(TVMFFIErrorSetRaisedFromCStrParts);
   TVM_INIT_CONTEXT_FUNC(TVMFFIEnvModLookupFromImports);
   TVM_INIT_CONTEXT_FUNC(TVMFFIHandleInitOnce);
   TVM_INIT_CONTEXT_FUNC(TVMBackendAllocWorkspace);

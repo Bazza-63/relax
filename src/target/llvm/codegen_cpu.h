@@ -162,6 +162,7 @@ class CodeGenCPU : public CodeGenLLVM {
   llvm::GlobalVariable* gv_tvm_ffi_env_mod_lookup_from_imports_{nullptr};
   llvm::GlobalVariable* gv_tvm_ffi_handle_init_once_{nullptr};
   llvm::GlobalVariable* gv_tvm_ffi_set_last_error_c_str_{nullptr};
+  llvm::GlobalVariable* gv_tvm_ffi_set_raised_from_c_str_parts_{nullptr};
   llvm::GlobalVariable* gv_tvm_parallel_launch_{nullptr};
   llvm::GlobalVariable* gv_tvm_parallel_barrier_{nullptr};
   std::unordered_map<ffi::String, llvm::GlobalVariable*> gv_func_map_;
