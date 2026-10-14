@@ -244,11 +244,17 @@ macro(find_llvm use_llvm)
   # insertDbgValueIntrinsic) accept BasicBlock::iterator as the insertion point
   # (upstream LLVM 20+) vs Instruction* (pre-LLVM 20 and ROCm-bundled LLVM 20,
   # which reports version 200 but retains the legacy Instruction* overload).
+  # Newer LLVM (e.g. the LLVM 24 bundled with ROCm 10.1) renamed
+  # insertDbgValueIntrinsic to insertDbgValue, so that is probed separately.
   if (${TVM_LLVM_VERSION} GREATER_EQUAL 200)
     include(CheckCXXSourceCompiles)
     include(CMakePushCheckState)
     cmake_push_check_state(RESET)
     set(CMAKE_REQUIRED_INCLUDES ${LLVM_INCLUDE_DIRS})
+    # Signature probes: compile only. Linking would need main() and the LLVM
+    # libraries, so a linked probe always fails and always picks the legacy API.
+    set(_tvm_saved_try_compile_target_type "${CMAKE_TRY_COMPILE_TARGET_TYPE}")
+    set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
     # Only force -std= when the outer project hasn't already selected a
     # standard; signature-only probe does not need -fno-rtti. Use the
     # compiler-appropriate form so the probe works under MSVC as well.
@@ -266,10 +272,23 @@ macro(find_llvm use_llvm)
              llvm::DIExpression* e, const llvm::DILocation* dl,
              llvm::Instruction* i) {
         b->insertDeclare(v, var, e, dl, llvm::BasicBlock::iterator(i));
-        b->insertDbgValueIntrinsic(v, var, e, dl, llvm::BasicBlock::iterator(i));
       }
     " TVM_LLVM_DIBUILDER_USES_ITERATOR)
+    check_cxx_source_compiles("
+      #include <llvm/IR/DIBuilder.h>
+      #include <llvm/IR/Instructions.h>
+      void f(llvm::DIBuilder* b, llvm::Value* v, llvm::DILocalVariable* var,
+             llvm::DIExpression* e, const llvm::DILocation* dl,
+             llvm::Instruction* i) {
+        b->insertDbgValue(v, var, e, dl, llvm::BasicBlock::iterator(i));
+      }
+    " TVM_LLVM_DIBUILDER_HAS_INSERT_DBG_VALUE)
+    set(CMAKE_TRY_COMPILE_TARGET_TYPE "${_tvm_saved_try_compile_target_type}")
     cmake_pop_check_state()
+    if(TVM_LLVM_DIBUILDER_HAS_INSERT_DBG_VALUE)
+      add_definitions(-DTVM_LLVM_DIBUILDER_HAS_INSERT_DBG_VALUE=1)
+      message(STATUS "LLVM DIBuilder uses insertDbgValue")
+    endif()
     if(TVM_LLVM_DIBUILDER_USES_ITERATOR)
       add_definitions(-DTVM_LLVM_DIBUILDER_USES_ITERATOR=1)
       message(STATUS "LLVM DIBuilder insertion APIs use BasicBlock::iterator")

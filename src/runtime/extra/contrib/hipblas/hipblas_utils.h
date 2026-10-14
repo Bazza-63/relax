@@ -32,6 +32,16 @@
 #define HIPBLAS_V2
 #endif
 #include <hipblas/hipblas.h>
+#if defined(_MSC_VER) && !defined(__clang__)
+// hipBLASLt's host headers (hipblaslt_e5m3.h) call the GCC/Clang builtin __builtin_clz, which
+// MSVC does not provide. Same contract: undefined for 0 (the caller never passes 0).
+#include <intrin.h>
+static inline int __builtin_clz(unsigned int x) {
+  unsigned long index;
+  _BitScanReverse(&index, x);
+  return 31 - static_cast<int>(index);
+}
+#endif
 #include <hipblaslt/hipblaslt.h>
 #include <tvm/ffi/error.h>
 

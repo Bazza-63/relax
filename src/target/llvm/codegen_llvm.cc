@@ -2055,8 +2055,7 @@ llvm::Value* CodeGenLLVM::Dispatch_(const prim::ShuffleNode* op) {
     const auto* imm = op->indices[i].as<IntImmNode>();
     auto val = imm ? imm->value.as<int64_t>() : std::nullopt;
     TVM_FFI_ICHECK(val.has_value() && *val >= 0 && *val < total_lanes)
-        << "Shuffled indeces are suppose to be int, "
-        << "but get " << op->indices[i] << "\n";
+        << "Shuffled indeces are suppose to be int, " << "but get " << op->indices[i] << "\n";
     idx[i] = *val;
   }
   llvm::Value* mask = llvm::ConstantDataVector::get(builder_->getContext(), idx);
@@ -2481,10 +2480,21 @@ void CodeGenLLVM::AddDebugInformation(llvm::Value* llvm_value, const Var& tir_va
   // For non-pointer types (floats, vectors), use dbg_value instead to track
   // the SSA value directly rather than a memory location.
   if (!llvm_value->getType()->isPointerTy()) {
+    // Upstream LLVM 20+ changed insertDbgValueIntrinsic to take BasicBlock::iterator;
+    // ROCm-bundled LLVM 20 retains Instruction*; newer LLVM renamed it to insertDbgValue.
+    // TVM_LLVM_DIBUILDER_* are set by CMake feature detection.
+#if TVM_LLVM_DIBUILDER_HAS_INSERT_DBG_VALUE
     if (insert_before) {
-      // Upstream LLVM 20+ changed insertDbgValueIntrinsic to take
-      // BasicBlock::iterator; ROCm-bundled LLVM 20 retains Instruction*.
-      // TVM_LLVM_DIBUILDER_USES_ITERATOR is set by CMake feature detection.
+      dbg_info_->di_builder_->insertDbgValue(llvm_value, local_var,
+                                             dbg_info_->di_builder_->createExpression(), di_loc,
+                                             llvm::BasicBlock::iterator(insert_before));
+    } else {
+      dbg_info_->di_builder_->insertDbgValue(llvm_value, local_var,
+                                             dbg_info_->di_builder_->createExpression(), di_loc,
+                                             builder_->GetInsertBlock());
+    }
+#else
+    if (insert_before) {
 #if TVM_LLVM_DIBUILDER_USES_ITERATOR
       dbg_info_->di_builder_->insertDbgValueIntrinsic(
           llvm_value, local_var, dbg_info_->di_builder_->createExpression(), llvm::DebugLoc(di_loc),
@@ -2499,6 +2509,7 @@ void CodeGenLLVM::AddDebugInformation(llvm::Value* llvm_value, const Var& tir_va
           llvm_value, local_var, dbg_info_->di_builder_->createExpression(), llvm::DebugLoc(di_loc),
           builder_->GetInsertBlock());
     }
+#endif
     return;
   }
 
