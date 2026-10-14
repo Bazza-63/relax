@@ -210,6 +210,13 @@ class CodeGenAMDGPU : public CodeGenLLVM {
     if (sync == "warp") {
       return nullptr;
     } else if (sync == "shared") {
+      // Same sequence as HIP's __syncthreads(): a workgroup-scope release fence, the barrier,
+      // then an acquire fence. A bare s_barrier orders execution only; LLVM may move
+      // shared-memory loads and stores across the intrinsic, and the backend waits for
+      // outstanding memory operations before the barrier only on GPUs without
+      // FeatureBackOffBarrier (gfx90a, gfx11 and gfx12 have it). Without the fences, waves on
+      // those GPUs cross the barrier while other waves' shared-memory stores are still in
+      // flight; e.g. the paged KV-cache attention kernels then read stale tile state and fault.
 #if TVM_LLVM_VERSION >= 200
       llvm::Function* f = llvm::cast<llvm::Function>(llvm::Intrinsic::getOrInsertDeclaration(
           module_.get(), llvm::Intrinsic::amdgcn_s_barrier, {}));
@@ -217,7 +224,11 @@ class CodeGenAMDGPU : public CodeGenLLVM {
       llvm::Function* f =
           llvm::Intrinsic::getDeclaration(module_.get(), llvm::Intrinsic::amdgcn_s_barrier);
 #endif
-      return builder_->CreateCall(f, {});
+      llvm::SyncScope::ID workgroup = builder_->getContext().getOrInsertSyncScopeID("workgroup");
+      builder_->CreateFence(llvm::AtomicOrdering::Release, workgroup);
+      llvm::Value* barrier = builder_->CreateCall(f, {});
+      builder_->CreateFence(llvm::AtomicOrdering::Acquire, workgroup);
+      return barrier;
     } else {
       TVM_FFI_THROW(InternalError) << "Do not support sync " << sync;
     }
