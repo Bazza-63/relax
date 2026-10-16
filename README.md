@@ -15,6 +15,12 @@
 <!--- specific language governing permissions and limitations -->
 <!--- under the License. -->
 
+> **Fork notice.** This is a fork of [mlc-ai/relax](https://github.com/mlc-ai/relax) (Apache TVM
+> with Relax, Apache-2.0) used by [`Bazza-63/mlc-llm-rocm10-win11`](https://github.com/Bazza-63/mlc-llm-rocm10-win11).
+> Branch `rocm-10.1-support` adds ROCm 10.x support (HIP 7.x, hipBLAS/hipBLASLt, LLVM 24, RDNA
+> wave32) and Windows 11 support for the ROCm backend. It is independent of, and not endorsed by,
+> the Apache TVM and MLC AI projects; all other code is theirs.
+
 <img src=https://raw.githubusercontent.com/apache/tvm-site/main/images/logo/tvm-logo-small.png width=128/> Open Machine Learning Compiler Framework
 ==============================================
 [Documentation](https://tvm.apache.org/docs) |
