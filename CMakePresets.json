@@ -1,0 +1,55 @@
+{
+  "version": 5,
+  "cmakeMinimumRequired": { "major": 3, "minor": 24, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "win-rocm-base",
+      "hidden": true,
+      "description": "TVM compiler + ROCm runtime on Windows with TheRock's ROCm and LLVM. Override ROCM_PATH in CMakeUserPresets.json if ROCm is not in C:/TheRock/build.",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build-${presetName}",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" },
+      "environment": {
+        "ROCM_PATH": "C:/TheRock/build",
+        "HIP_PATH": "$env{ROCM_PATH}",
+        "PATH": "$env{ROCM_PATH}/bin;$env{ROCM_PATH}/lib/llvm/bin;$penv{PATH}"
+      },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "USE_ROCM": "$env{ROCM_PATH}",
+        "USE_HIPBLAS": "ON",
+        "USE_LLVM": "$env{ROCM_PATH}/lib/llvm/bin/llvm-config.exe",
+        "USE_Z3": "OFF",
+        "HIDE_PRIVATE_SYMBOLS": "ON"
+      },
+      "vendor": {
+        "jetbrains.com/clion": { "toolchain": "Visual Studio" }
+      }
+    },
+    {
+      "name": "win-rocm-msvc",
+      "displayName": "Windows ROCm (MSVC cl)",
+      "description": "Same flags as the tvm stage of ci/task/build_rocm_windows.ps1 in mlc-llm-rocm10-win11.",
+      "inherits": "win-rocm-base",
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "cl.exe",
+        "CMAKE_CXX_COMPILER": "cl.exe"
+      }
+    },
+    {
+      "name": "win-rocm-amdclang",
+      "displayName": "Windows ROCm (AMD clang-cl, experimental)",
+      "description": "TheRock's clang-cl against the MSVC headers and libraries. Not yet verified.",
+      "inherits": "win-rocm-base",
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "$env{ROCM_PATH}/lib/llvm/bin/clang-cl.exe",
+        "CMAKE_CXX_COMPILER": "$env{ROCM_PATH}/lib/llvm/bin/clang-cl.exe"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "win-rocm-msvc", "configurePreset": "win-rocm-msvc", "targets": ["tvm_compiler", "tvm_runtime"] },
+    { "name": "win-rocm-amdclang", "configurePreset": "win-rocm-amdclang", "targets": ["tvm_compiler", "tvm_runtime"] }
+  ]
+}
